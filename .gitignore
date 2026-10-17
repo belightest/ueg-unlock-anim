@@ -1,0 +1,16 @@
+# ── 本地配置与运行时产物（不入库）────────────────────────────────
+config.txt
+run.log
+edge-profile/
+_selftest/
+ueg/go.txt
+
+# 个人照片：示例配置默认指向它，需自备（放到 ueg/assets/photo.jpg）
+ueg/assets/photo.jpg
+
+# ── 编译产物（由 src\build.cmd 生成）────────────────────────────
+*.exe
+*.pdb
+
+# ── 开发期预览图 ────────────────────────────────────────────────
+ueg/*-preview*.png

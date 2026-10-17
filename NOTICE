@@ -1,0 +1,37 @@
+550C / UEG 登录解锁动画
+Copyright 2026 belightest
+
+本仓库采用混合许可：原创代码见 LICENSE（Apache License 2.0）；
+下列第三方内容保留其原始许可与版权声明。
+
+--------------------------------------------------------------------------
+This product includes material derived from the following works.
+--------------------------------------------------------------------------
+
+dsh-550c-boot — Full-Screen 550C Boot Splash Intro (DSH Plugin)
+  https://github.com/yannicksong0106/dsh-550c-boot
+  MIT License
+  Copyright (c) 2026 Ziyang Song
+
+  550C 片头动画与其 HTML 原稿由 Voidpocket (@Voidpocket) 提供；
+  插件工程由 Ziyang Song (@yannicksong0106) 完成。
+
+  本仓库中 ueg/assets/ 下的徽记、logo 与点云数据，以及 ueg/ueg.html 中
+  终幕标志化的视觉与节奏，衍生自上述项目的 550C 片头设计，按其 MIT 许可
+  保留上述版权声明与许可文本。
+
+登录授权阶段的交互思路另受以下项目启发（仅思路，未使用其代码或素材）：
+
+dsh-startup-screen
+  https://github.com/6shenhonghong9/dsh-startup-screen
+  MIT License
+  Copyright (c) 沈宏宏
+
+--------------------------------------------------------------------------
+Third-party material NOT included
+--------------------------------------------------------------------------
+
+本仓库不包含任何影视作品的画面、声音、音乐、配音、官方标识或字体文件。
+ueg/voice/ 下的旁白为 TTS 生成，非影视原声。
+"UEG""550C"等名称与术语仅用于描述界面风格，相关作品与名称的权利归其权利人所有。
+本项目为非官方作品，与相关作品的权利人无任何关联，亦未获得其授权或背书。

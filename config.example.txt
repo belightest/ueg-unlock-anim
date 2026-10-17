@@ -1,0 +1,38 @@
+﻿# ===== UEG 解锁动画配置 =====
+# 用法：复制本文件为 config.txt，再按需修改。保存后下次登录播放时生效。
+# 注意：文件必须是 UTF-8 编码（含中文时）。
+
+# 主题：ueg = 联合政府公文白（默认）；550c = 磷光终端暗绿；
+#       custom = 自定义主色（配合下面 accent=#rrggbb）
+theme=ueg
+
+# 自定义主色（仅 theme=custom 时生效）：# 开头的 6 位十六进制
+accent=
+
+# 配音：male = 男声；female = 女声
+voice=female
+
+# 音频总开关：on = 播放配音；off = 静音播放
+audio=on
+
+# 自动播放：on = 三幕自动往下走；off = 每一步等待点击/回车
+autoplay=on
+
+# 总开关：on = 登录时播放；off = 静默跳过（不卸载触发也能停播）
+enabled=on
+
+# 收尾过渡多少秒还没结束就强制关窗（秒）
+exit_fallback_seconds=10
+
+# ===== 身份卡（显示在授权界面，留空则用页面默认值）=====
+# 名字与照片属个人隐私：operator_name 留空，photo 自备且已被 .gitignore 排除
+operator_name=
+operator_id=
+# 示例值"奶龙研究所"是彩蛋，可替换成任意机构名
+issuer=奶龙研究所
+clearance_level=
+valid_until=
+scope=
+biometric=
+# 照片：默认 assets/photo.jpg，放到 ueg\assets\ 下即可（竖拍照片会自动按 EXIF 转正）
+photo=assets/photo.jpg

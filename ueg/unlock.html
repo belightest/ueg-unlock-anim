@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UEG-BOOT</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #050403; overflow: hidden; }
+  #stage { position: fixed; left: 0; top: 0; width: 100%; height: 100%; border: 0; }
+
+  /* ── 收尾：一滴水落入画面，透明水膜圆形扩散，进入桌面 ────────────────────
+     动画派发 ueg:done 后：宿主把整窗透明度渐降到 0（实时桌面从窗口后面透出来），
+     页面同时漾开半透明冷水色水膜与三道涟漪环——水在实时桌面上方荡开、随之
+     一起透明。全程约 2 秒。任意键可立即跳过。                               */
+  .lightup { position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; opacity: 0; }
+  .lightup.on { opacity: 1; }
+  .lightup .core, .lightup .ring, .lightup .drop {
+    position: absolute; left: 50%; top: 50%; border-radius: 50%;
+    transform: translate(-50%, -50%) scale(0);
+  }
+  .lightup .core, .lightup .ring { width: 190vmax; height: 190vmax; }
+  /* 水膜：半透明冷水色（不是白光）——像隔着一层水看背光 */
+  .lightup .core {
+    background: radial-gradient(circle,
+      rgba(214, 236, 247, .34) 0%, rgba(214, 236, 247, .24) 42%,
+      rgba(190, 222, 242, .11) 58%, rgba(190, 222, 242, 0) 72%);
+  }
+  /* 涟漪环：冷白亮环 + 青色辉光，环顶立在水膜前锋 */
+  .lightup .ring {
+    border: 3px solid rgba(235, 248, 255, .92);
+    box-shadow: 0 0 46px rgba(150, 210, 245, .55), inset 0 0 80px rgba(150, 210, 245, .28);
+  }
+  /* 滴心：涟漪起源的一小点冷水光，随即让位给环 */
+  .lightup .drop {
+    width: 90px; height: 90px;
+    background: radial-gradient(circle, rgba(235, 248, 255, .85) 0%, rgba(190, 222, 242, .35) 40%, rgba(190, 222, 242, 0) 70%);
+  }
+  /* 匀速扩散：水波纹的传播物理就是等速的，前段冲得太快会看不出"扩散" */
+  .lightup.on .core { animation: l-core 1150ms linear forwards; }
+  .lightup.on .ring { animation: l-ring 1150ms linear forwards; }
+  .lightup.on .ring.r2 { animation-delay: 150ms; opacity: .55; }
+  .lightup.on .ring.r3 { animation-delay: 300ms; opacity: .35; }
+  .lightup.on .drop { animation: l-drop 420ms ease-out forwards; }
+  .lightup.dim { transition: opacity 320ms ease; opacity: 0; }
+  @keyframes l-core { from { transform: translate(-50%, -50%) scale(0); } to { transform: translate(-50%, -50%) scale(1); } }
+  /* 涟漪环：快速亮起 → 保持亮度随水面推进 → 出土前一刻熄灭（线感才立得住） */
+  @keyframes l-ring {
+    from { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+    9% { opacity: .95; }
+    84% { opacity: .95; }
+    to { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+  }
+  @keyframes l-drop {
+    0% { transform: translate(-50%, -50%) scale(.2); opacity: 0; }
+    25% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<iframe id="stage"></iframe>
+<div class="lightup" id="lightup" aria-hidden="true">
+  <div class="drop"></div>
+  <div class="core"></div>
+  <div class="ring"></div>
+  <div class="ring r2"></div>
+  <div class="ring r3"></div>
+</div>
+<script>
+  (function () {
+    var params = window.location.search;
+    var stage = document.getElementById('stage');
+    var started = false;
+    var iframeReady = false;
+    var pendingGo = false;
+    var gated = params.indexOf('ueg=1') >= 0;
+
+    // 预载：闸门模式下动画页带 hold=1 先装进 iframe —— JS 解析、图片解码、canvas
+    // 初始化都在登录期间做完，宿主放行时只差一个 postMessage，画面零等待。
+    // （此前是放行后才装 iframe，那 1–2 秒的加载时间就是用户看到的黑屏。）
+    stage.src = 'ueg.html' + params + (gated ? '&hold=1' : '');
+
+    function sendGo() {
+      try { stage.contentWindow.postMessage('ueg:go', '*'); } catch (error) { }
+    }
+    function go() {
+      if (started) { return; }
+      started = true;
+      document.title = 'UEG-START';   // 宿主据此计时：放行 → 真正起播的间隔
+      if (!gated) { return; }
+      if (iframeReady) { sendGo(); } else { pendingGo = true; }
+    }
+
+    window.addEventListener('message', function (event) {
+      if (event.data === 'ueg:ready') {
+        iframeReady = true;
+        if (pendingGo) { sendGo(); }
+      }
+    });
+
+    // 只有宿主带 ?ueg=1 进来才等 go.txt 信号；直接双击打开本页时立即开播，方便单独查看。
+    // 兜底：信号链路万一断了，90 秒后照常开播。
+    var deadline = Date.now() + 90000;
+    var POLL_MS = 50;   // 轮询间隔 = 放行后黑屏等待的下限，200ms 太粗
+
+    function poll() {
+      if (started) { return; }
+      if (Date.now() > deadline) { go(); return; }
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'go.txt?t=' + Date.now(), true);
+        xhr.onload = function () {
+          var ok = xhr.status === 200 ||
+                   (xhr.status === 0 && xhr.responseText && xhr.responseText.indexOf('1') >= 0);
+          if (ok) { go(); }
+          else { setTimeout(poll, POLL_MS); }
+        };
+        xhr.onerror = function () { setTimeout(poll, POLL_MS); };
+        xhr.send();
+      } catch (error) {
+        setTimeout(poll, POLL_MS);
+      }
+    }
+    if (gated) { poll(); }
+
+    var done = false;
+    var finished = false;
+    var timer = null;
+
+    function closeNow() {
+      if (finished) { return; }
+      finished = true;
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+      document.title = 'UEG-DONE-CLICKED';   // 宿主见到即关窗，露出桌面
+    }
+
+    window.addEventListener('message', function (event) {
+      if (event.data !== 'ueg:done' || done) { return; }
+      done = true;
+      // 先挂 UEG-DONE：宿主随即进入 10 秒兜底计时——过渡万一天折，窗口也不会卡住
+      document.title = 'UEG-DONE';
+      try {
+        var lightup = document.getElementById('lightup');
+        // 水波起手：同时把标题换成 UEG-WATER，宿主从这一刻起把整窗透明度渐降到 0
+        // （实时桌面从窗口后面透出来），水膜就在实时桌面上方荡开、随之一起透明
+        timer = setTimeout(function () {
+          document.title = 'UEG-WATER';
+          lightup.classList.add('on');
+        }, 250);
+        // 水膜扩张(1150) → 停在清水一瞬(350) → 退潮落暗(320) → 关窗
+        timer = setTimeout(function () {
+          lightup.classList.add('dim');
+          timer = setTimeout(closeNow, 340);
+        }, 1750);
+      } catch (error) {
+        closeNow();   // 动画起不来就直接收尾，不卡画面
+      }
+    });
+
+    // 不想等这一秒半：回车 / 空格 / Esc 任意一键立即收尾
+    document.addEventListener('keydown', function (event) {
+      if (done && (event.key === 'Enter' || event.key === ' ' || event.key === 'Escape')) {
+        closeNow();
+      }
+    });
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# ── 二进制素材：标记 binary，防止 git 当文本处理（换行符转换 / diff 损坏）──
+*.wav  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+
+# ── 行尾策略：仓库内统一存 LF；.cmd 检出为 CRLF（cmd 批处理对 LF 敏感，项目铁律）──
+* text=auto
+*.cmd text eol=crlf
