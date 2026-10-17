@@ -144,8 +144,7 @@ namespace UEGUnlockConfig
         static int Run()
         {
             baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            // BaseDirectory 取不到时的兜底：退回当前工作目录（正常永远不会走到）
-            if (string.IsNullOrEmpty(baseDir)) { baseDir = "."; }
+            if (string.IsNullOrEmpty(baseDir)) { baseDir = "D:\\BootAnim"; }
             baseDir = baseDir.TrimEnd('\\');
             logFile = Path.Combine(baseDir, "run.log");
             profileDir = Path.Combine(baseDir, "edge-profile");
@@ -194,10 +193,33 @@ namespace UEGUnlockConfig
             string url = "file:///" + page.Replace('\\', '/');
             if (q.Count > 0) { url = url + "?" + string.Join("&", q.ToArray()); }
 
+            // 锁屏未登录时不要起 Edge：窗口会建到 Winlogon 桌面上 —— 动画在密码框
+            // 背后播放、用户一输密码就被桌面切换连窗销毁（2026-10-18 实测故障：
+            // 关机重启后"弹不出来"，日志却全绿）。等"用户桌面成为输入桌面
+            // （Default）"再起。正常情况下宿主由 HKCU Run 在登录后拉起，这里零
+            // 等待；只有异常早到（登录前触发）时才等，等的就是输密码那一下。
+            // 等超过 ReleaseGraceMs 还没登录就退出，不往锁屏桌面起窗口 ——
+            // 用户真正登录时 Run 会再拉一次宿主。
+            int deferMs = 0;
+            while (!DesktopIsCurrent())
+            {
+                if (deferMs >= ReleaseGraceMs)
+                {
+                    Log("no user logon within " + ReleaseGraceMs + "ms, exit (Run will relaunch at logon)  [t+" + Ms() + "ms]");
+                    return 0;
+                }
+                System.Threading.Thread.Sleep(PollMs);
+                deferMs += PollMs;
+            }
+            if (deferMs > 0)
+            {
+                Log("waited " + deferMs + "ms for user desktop, launching edge  [t+" + Ms() + "ms]");
+            }
+
             // 起 Edge 前先清掉上一轮的开播信号，否则页面一上线就拿到旧信号、立刻开播
             ClearGo();
 
-            // 立刻起 Edge，不等桌面 —— Edge 从建进程到首帧约 1 秒，让它跟桌面加载并行跑。
+            // Edge 从建进程到首帧约 1 秒，让它跟桌面加载并行跑（登录后触发时零等待）。
             // 之前"抢在 shell 之前建窗会被桌面盖住"，是因为 z 序按创建顺序排（后建者在上）；
             // 现在改用 HWND_TOPMOST 置顶，压桌面与创建顺序无关，故可放心提前起 Edge。
             // 但页面只上线、不加载动画（见 unlock.html 的 iframe 闸门），
@@ -299,7 +321,10 @@ namespace UEGUnlockConfig
                         relAt = DateTime.Now;
                         Log("desktop visible, animation released  [t+" + Ms() + "ms]");
                     }
-                    else if ((DateTime.Now - booted).TotalMilliseconds >= ReleaseGraceMs)
+                    // 兜底放行：桌面检测卡住 90s 仍放行（宁可早播也不能黑屏到底）。
+                    // 但外壳没起来（用户还没登录）绝不放行 —— 那正是登录前异常
+                    // 触发的情形，放了就等于在锁屏上播动画。
+                    else if (shellUp && (DateTime.Now - booted).TotalMilliseconds >= ReleaseGraceMs)
                     {
                         Release();
                         released = true;
@@ -523,6 +548,11 @@ namespace UEGUnlockConfig
         // 用户桌面现在是"屏幕真正显示的那个桌面"吗？
         // 登录期间锁屏/欢迎界面跑在另一个桌面（Winlogon）上，用户桌面虽已建好却还没被显示；
         // 只有它成为"输入桌面"时，用户才真的看得见。取不到信息一律放行，宁可早播。
+        //
+        // 必须是绝对判定：输入桌面的名字就是用户交互桌面 Default。老逻辑拿
+        // "输入桌面 == 宿主自己线程的桌面"做相对比较 —— 若宿主跑在 Winlogon 上
+        // （登录前触发），两边都叫 Winlogon 也会相等，会误判放行：动画在密码框
+        // 背后播放、用户一输密码就被桌面切换连窗销毁（2026-10-18 实测故障）。
         private static bool DesktopIsCurrent()
         {
             IntPtr input = IntPtr.Zero;
@@ -532,11 +562,7 @@ namespace UEGUnlockConfig
                 if (input == IntPtr.Zero) { return true; }
                 string inName = ObjName(input);
                 if (inName == "") { return true; }
-                IntPtr mine = GetThreadDesktop(GetCurrentThreadId());
-                if (mine == IntPtr.Zero) { return true; }
-                string myName = ObjName(mine);
-                if (myName == "") { return true; }
-                return string.Equals(inName, myName, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(inName, "Default", StringComparison.OrdinalIgnoreCase);
             }
             catch { return true; }
             finally
