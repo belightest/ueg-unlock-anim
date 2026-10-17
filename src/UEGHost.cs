@@ -8,8 +8,10 @@
 //        P/Invoke 随 exe 编译好（无运行时编译），冷启动开销 ≈ 0.2s。
 //  流程：读 config.txt → 立刻起 Edge kiosk 全屏（不等桌面，让 Edge 约 1s 的冷启动
 //        与桌面加载并行；窗口一律 HWND_TOPMOST 置顶，桌面一出现画面已在最上层）
-//        → 页面先只留黑屏，等"用户桌面成为当前桌面"才写 go.txt 放行开播
-//        （否则动画连同音频会在锁屏/欢迎界面背后悄悄跑掉一半）
+//        → 页面先只留黑屏，等"Edge 窗口真的出现在屏上"才写 go.txt 放行开播
+//        （判据 = WindowFromPoint 打中自己的窗口：打不中，就说明欢迎界面/锁屏
+//        还占据着屏幕，动画连同音频会在用户看不见的桌面上悄悄跑掉 —— 2026-10-18
+//        实测故障：输完密码后语音先响十几秒，桌面才慢悠悠画出来）
 //        → 轮询窗口标题 → 页面进入 UEG-WATER（水波起手）时把整窗 alpha 渐降到 0，
 //        实时桌面从窗口后面透出来 → 杀掉本次启动的 Edge → 进程退出。
 //  收尾：进程结束即退出，不留后台、不占运存。
@@ -95,6 +97,25 @@ namespace UEGUnlockConfig
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex,
             StringBuilder pvInfo, int nLength, out int lpnLengthNeeded);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(POINT Point);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern int GetSystemMetrics(int nIndex);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int X; public int Y; }
+
+        private const uint GA_ROOT = 2;
+        private const int SM_CXSCREEN = 0;
+        private const int SM_CYSCREEN = 1;
 
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_LAYERED = 0x00080000;
@@ -193,14 +214,14 @@ namespace UEGUnlockConfig
             string url = "file:///" + page.Replace('\\', '/');
             if (q.Count > 0) { url = url + "?" + string.Join("&", q.ToArray()); }
 
-            // 锁屏未登录时不要起 Edge：窗口会建到 Winlogon 桌面上 —— 动画在密码框
-            // 背后播放、用户一输密码就被桌面切换连窗销毁（2026-10-18 实测故障：
-            // 关机重启后"弹不出来"，日志却全绿）。等"用户桌面成为输入桌面
-            // （Default）"再起。正常情况下宿主由 HKCU Run 在登录后拉起，这里零
-            // 等待；只有异常早到（登录前触发）时才等，等的就是输密码那一下。
-            // 等超过 ReleaseGraceMs 还没登录就退出，不往锁屏桌面起窗口 ——
-            // 用户真正登录时 Run 会再拉一次宿主。
+            // 登录前的保险（正常路径下是零等待的空转）：等"用户桌面成为输入桌面"
+            // 再起 Edge。注意 DesktopIsCurrent 读的是宿主自己窗口站的输入桌面，
+            // 登录后它恒为 Default，挡不住"欢迎界面还挂着"的那十几秒 —— 真正
+            // 的闸门在放行处的 EdgeOnScreen()。这里只在异常早到（登录前触发）
+            // 时兜一下；等超过 ReleaseGraceMs 还没登录就退出，不往锁屏桌面起
+            // 窗口 —— 用户真正登录时 Run 会再拉一次宿主。
             int deferMs = 0;
+            DateTime deferDiag = DateTime.MinValue;
             while (!DesktopIsCurrent())
             {
                 if (deferMs >= ReleaseGraceMs)
@@ -210,6 +231,11 @@ namespace UEGUnlockConfig
                 }
                 System.Threading.Thread.Sleep(PollMs);
                 deferMs += PollMs;
+                if ((DateTime.Now - deferDiag).TotalMilliseconds >= 500)
+                {
+                    deferDiag = DateTime.Now;
+                    Diag();
+                }
             }
             if (deferMs > 0)
             {
@@ -271,6 +297,7 @@ namespace UEGUnlockConfig
             bool deskCurrent = false;
             DateTime deskCurrentAt = DateTime.MinValue;
             bool released = false;
+            DateTime lastDiag = DateTime.MinValue;
 
             while (true)
             {
@@ -304,12 +331,21 @@ namespace UEGUnlockConfig
                     // "Explorer 窗口建好" ≠ "桌面显示出来了"：登录期间用户桌面早已存在，
                     // 只是屏幕当时还指在另一个桌面（Winlogon，锁屏/欢迎界面所在）上。
                     // 只有当用户桌面成为"输入桌面"时，用户才真的看得见。
-                    bool deskReady = shellUp && DesktopIsCurrent();
+                    //
+                    // 而"输入桌面"这个名字也不能全信（2026-10-18 实测教训）：宿主读到
+                    // 的永远是自己窗口站（WinSta0）的输入桌面，登录后它恒为 Default，
+                    // 欢迎界面还挂着的十几秒里它也是 Default —— 上一版照这个放行，结果
+                    // 语音比桌面早响十几秒。唯一不会撒谎的判据是"我们的窗口有没有真的
+                    // 出现在屏上"：WindowFromPoint 只命中当前输入桌面上的窗口，欢迎
+                    // 界面还挂着时打中的是那边的窗口；等输入桌面切到 Default，我们的
+                    // 全屏置顶窗口才第一次被打中 —— 那一刻才是用户真正看得见我们的时候。
+                    bool onScreen = EdgeOnScreen();
+                    bool deskReady = shellUp && DesktopIsCurrent() && onScreen;
                     if (deskReady && !deskCurrent)
                     {
                         deskCurrent = true;
                         deskCurrentAt = DateTime.Now;
-                        Log("desktop current  [t+" + Ms() + "ms]");
+                        Log("desktop current (edge window on screen)  [t+" + Ms() + "ms]");
                     }
                     if (deskReady && DesktopSettled() &&
                         (DateTime.Now - deskCurrentAt).TotalMilliseconds >= SettleMs)
@@ -330,6 +366,13 @@ namespace UEGUnlockConfig
                         released = true;
                         relAt = DateTime.Now;
                         Log("released by grace (desktop detect stalled)  [t+" + Ms() + "ms]");
+                    }
+                    // 诊断：等放行期间每 500ms 记一行 —— 输入桌面叫什么、前台窗口是谁、
+                    // 屏幕中心打中了谁。下次"语音比桌面先响"就不用再猜了。
+                    if (!released && (DateTime.Now - lastDiag).TotalMilliseconds >= 500)
+                    {
+                        lastDiag = DateTime.Now;
+                        Diag();
                     }
                     // 放行前持续重申置顶，桌面一出现就被我们压在下面
                     if (h != IntPtr.Zero) { BringToFront(h); }
@@ -549,6 +592,12 @@ namespace UEGUnlockConfig
         // 登录期间锁屏/欢迎界面跑在另一个桌面（Winlogon）上，用户桌面虽已建好却还没被显示；
         // 只有它成为"输入桌面"时，用户才真的看得见。取不到信息一律放行，宁可早播。
         //
+        // 注意（2026-10-18 纠正）：OpenInputDesktop 读的是**宿主自己窗口站**
+        // （用户会话的 WinSta0）的输入桌面 —— 登录后它恒为 Default，欢迎界面还
+        // 挂着的十几秒里它也是 Default。所以这个判定挡不住"输完密码、桌面还没
+        // 画出来"那段时间，真正的闸门是 EdgeOnScreen()；本函数保留为辅助条件
+        // （登录前异常触发、或输入桌面语义不同的系统上仍有一用）。
+        //
         // 必须是绝对判定：输入桌面的名字就是用户交互桌面 Default。老逻辑拿
         // "输入桌面 == 宿主自己线程的桌面"做相对比较 —— 若宿主跑在 Winlogon 上
         // （登录前触发），两边都叫 Winlogon 也会相等，会误判放行：动画在密码框
@@ -588,6 +637,115 @@ namespace UEGUnlockConfig
             }
             catch { }
             return "";
+        }
+
+        // ---------------- 屏上判定（放行闸门的真正判据） ----------------
+        // "我们的 Edge 窗口真的出现在用户眼前了吗？"
+        // 做法：取屏幕中心点，用 WindowFromPoint 打一枪 —— 该 API 只命中**当前
+        // 输入桌面**（屏幕真正显示的那个桌面）上的窗口：欢迎界面/锁屏还挂着时，
+        // 打中的是那边的窗口，沿父链爬到顶不是我们；等输入桌面切到 Default，
+        // 我们的全屏置顶窗口才第一次被打中。判据取"命中的窗口爬到根是不是我们
+        // 这次起的 Edge 进程"（Edge 的渲染子窗口同属这个进程，一起算）。
+        // 任何一步取不到信息都算"不在屏上"（fail-closed）：宁可晚播，不能早播。
+        private static bool EdgeOnScreen()
+        {
+            if (edgeProc == null || edgeProc.HasExited) { return false; }
+            try
+            {
+                IntPtr hit = ProbeCenter();
+                if (hit == IntPtr.Zero) { return false; }
+                IntPtr root = GetAncestor(hit, GA_ROOT);
+                if (root == IntPtr.Zero) { root = hit; }
+                int pid = 0;
+                GetWindowThreadProcessId(root, out pid);
+                return pid == edgeProc.Id;
+            }
+            catch { return false; }
+        }
+
+        // 屏幕中心点当前打中的窗口（命中不了返回 Zero）
+        private static IntPtr ProbeCenter()
+        {
+            POINT pt;
+            pt.X = GetSystemMetrics(SM_CXSCREEN) / 2;
+            pt.Y = GetSystemMetrics(SM_CYSCREEN) / 2;
+            return WindowFromPoint(pt);
+        }
+
+        // ---------------- 诊断 ----------------
+        // 等放行期间每 500ms 记一行：输入桌面名 / 自己桌面名 / 前台窗口 / 屏幕中心
+        // 打中了谁。2026-10-18 的故障（"输完密码语音先响、桌面十几秒后才画出来"）
+        // 就是靠这套日志定位的 —— 保留它，下次类似问题一眼看穿。
+        private static void Diag()
+        {
+            try
+            {
+                string inName = InputDesktopName();
+                string myName = SelfDesktopName();
+                string fg = "-";
+                IntPtr f = GetForegroundWindow();
+                if (f != IntPtr.Zero)
+                {
+                    int fpid = 0;
+                    GetWindowThreadProcessId(f, out fpid);
+                    fg = ClassOf(f) + "(pid " + fpid.ToString() + ")";
+                }
+                string probe = "-";
+                IntPtr hit = ProbeCenter();
+                if (hit != IntPtr.Zero)
+                {
+                    int hpid = 0;
+                    GetWindowThreadProcessId(hit, out hpid);
+                    IntPtr root = GetAncestor(hit, GA_ROOT);
+                    probe = ClassOf(hit) + "(pid " + hpid.ToString() +
+                        ",root=" + (root == IntPtr.Zero ? "0" : root.ToString()) + ")";
+                }
+                Log("gate: inputdesk=" + (inName == "" ? "?" : inName) +
+                    " selfdesk=" + (myName == "" ? "?" : myName) +
+                    " fg=" + fg + " probe=" + probe +
+                    " shell=" + (ShellIsUp() ? "1" : "0") +
+                    " edge=" + (edgeProc == null || edgeProc.HasExited ? "dead" : edgeProc.Id.ToString()) +
+                    "  [t+" + Ms() + "ms]");
+            }
+            catch { }
+        }
+
+        private static string InputDesktopName()
+        {
+            IntPtr d = IntPtr.Zero;
+            try
+            {
+                d = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+                if (d == IntPtr.Zero) { return ""; }
+                return ObjName(d);
+            }
+            catch { return ""; }
+            finally
+            {
+                if (d != IntPtr.Zero) { try { CloseDesktop(d); } catch { } }
+            }
+        }
+
+        private static string SelfDesktopName()
+        {
+            try
+            {
+                IntPtr d = GetThreadDesktop(GetCurrentThreadId());
+                if (d == IntPtr.Zero) { return ""; }
+                return ObjName(d);
+            }
+            catch { return ""; }
+        }
+
+        private static string ClassOf(IntPtr hWnd)
+        {
+            try
+            {
+                StringBuilder cn = new StringBuilder(256);
+                if (GetClassName(hWnd, cn, cn.Capacity) > 0) { return cn.ToString(); }
+            }
+            catch { }
+            return "?";
         }
 
         // ---------------- 开播信号 ----------------
