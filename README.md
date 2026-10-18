@@ -1,5 +1,9 @@
 # 550C / UEG 登录解锁动画
 
+![License](https://img.shields.io/badge/License-Apache--2.0-blue) ![Platform](https://img.shields.io/badge/platform-Windows_10%2F11-0078D6) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen) ![Privacy](https://img.shields.io/badge/privacy-100%25_local-brightgreen) ![AI](https://img.shields.io/badge/AI-assisted-blueviolet) [![Release](https://img.shields.io/github/v/release/belightest/ueg-unlock-anim?label=release&color=blue)](https://github.com/belightest/ueg-unlock-anim/releases/latest)
+
+**[⬇ 下载 exe 版（免编译，开箱即用）](https://github.com/belightest/ueg-unlock-anim/releases/latest)**
+
 开机登录后全屏播放一段 UEG 授权动画：终端扫描 → 550C 身份核验 → 550C 标志化终幕，
 收尾以一滴透明水波纹荡开、整窗渐隐，实时桌面从窗口后面透出来。
 动画播完进程立即退出，**不留后台、不占内存**。
