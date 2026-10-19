@@ -548,7 +548,8 @@ namespace UEGUnlockConfig
         // 修法：edgeProc 已退出而 kiosk 窗口已上线时，把窗口所属的真正 msedge
         // 进程收养为 edgeProc —— 后续所有判据恢复原有语义。
         // 安全性：FindKiosk 只收标题带 UEG-BOOT/START/DONE/WATER 的可见窗口，
-        // 且这里再校验一次进程名是 msedge，绝不误伤用户自己的 Edge。
+        // 这里再校验 ① 进程名是 msedge ② 进程启动于宿主启动之后 —— 用户自己
+        // 早就开着的 Edge（哪怕也开着我们的页面）绝不被收养、更不会被误杀。
         private static void TryAdopt(IntPtr kiosk)
         {
             if (kiosk == IntPtr.Zero) { return; }
@@ -560,11 +561,23 @@ namespace UEGUnlockConfig
                 Process pr = Process.GetProcessById(pid);
                 if (pr == null || pr.HasExited) { return; }
                 if (!string.Equals(pr.ProcessName, "msedge", StringComparison.OrdinalIgnoreCase)) { return; }
+                if (!IsOurEdge(pr)) { return; }
                 edgeProc = pr;
+                try { edgeProc.PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
                 Log("adopted kiosk edge pid=" + pid.ToString() +
                     " (launcher exited after first-launch relaunch)  [t+" + Ms() + "ms]");
             }
             catch { }
+        }
+
+        // 这个 msedge 进程是本次运行期间起来的吗？
+        // 宿主启动之前就在跑的 Edge 一定是用户自己的（含用户手动打开我们页面的
+        // 窗口），收养或关闭它们会闯祸；启动时间取不到时一律判"不是我们的"。
+        private static bool IsOurEdge(Process pr)
+        {
+            if (pr == null || pr.HasExited) { return false; }
+            try { return pr.StartTime >= booted; }
+            catch { return false; }
         }
 
         private static bool EnumWindowsCallback(IntPtr hWnd, IntPtr lParam)
@@ -871,7 +884,8 @@ namespace UEGUnlockConfig
                 {
                     // edgeProc 已退出（首启 relaunch 且没来得及收养）：按标题兜底
                     // 找窗口所属进程杀掉。窗口已被用户关掉时 FindKiosk 找不到，
-                    // 无事可做也无害。
+                    // 无事可做也无害。同样只动本次运行期间起来的 Edge —— 用户
+                    // 自己的 Edge 哪怕开着我们的页面也不能杀。
                     IntPtr kiosk = FindKiosk();
                     if (kiosk != IntPtr.Zero)
                     {
@@ -882,7 +896,7 @@ namespace UEGUnlockConfig
                             try
                             {
                                 Process p2 = Process.GetProcessById(kpid);
-                                if (p2 != null && !p2.HasExited) { p2.Kill(); }
+                                if (p2 != null && !p2.HasExited && IsOurEdge(p2)) { p2.Kill(); }
                             }
                             catch { }
                         }
