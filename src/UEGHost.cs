@@ -302,6 +302,13 @@ namespace UEGUnlockConfig
             while (true)
             {
                 IntPtr h = FindKiosk();
+                // Edge 首启 relaunch 后 Process.Start 的进程号已失效（edgeProc 成
+                // 了退出过的死进程）：kiosk 窗口一上线就把它所属的真正浏览器进程
+                // 收养过来，屏上探针与收尾关窗随即恢复有效。详见 TryAdopt 注释。
+                if (h != IntPtr.Zero && (edgeProc == null || edgeProc.HasExited))
+                {
+                    TryAdopt(h);
+                }
                 string title = (h == IntPtr.Zero) ? "" : TitleOf(h);
 
                 if (title != "" && title != lastTitle)
@@ -528,6 +535,36 @@ namespace UEGUnlockConfig
                 }
             }
             return IntPtr.Zero;
+        }
+
+        // ---------------- 收养真正的 kiosk 进程 ----------------
+        // Edge 首次使用一个全新 profile 时会"自我重启换进程"：启动器进程
+        // （Process.Start 返回的那个）建出 FirstLaunchAfterInstallation 标记后
+        // 立即退出，真正的浏览器进程以另一个 pid 接手（2026-10-20 实测：launcher
+        // 33ms 内退出，Crashpad 无崩溃记录 = 不是崩溃，是首启正常流程）。
+        // 后果：edgeProc 一开始就是死的 —— 屏上探针认不出我们的窗口、收尾也杀
+        // 不掉它，全新目录（每台新机器、每个新解压目录）首次运行只能干等 90 秒
+        // 兜底放行，用户看到的就是"双击后半天没反应，动画也没见"。
+        // 修法：edgeProc 已退出而 kiosk 窗口已上线时，把窗口所属的真正 msedge
+        // 进程收养为 edgeProc —— 后续所有判据恢复原有语义。
+        // 安全性：FindKiosk 只收标题带 UEG-BOOT/START/DONE/WATER 的可见窗口，
+        // 且这里再校验一次进程名是 msedge，绝不误伤用户自己的 Edge。
+        private static void TryAdopt(IntPtr kiosk)
+        {
+            if (kiosk == IntPtr.Zero) { return; }
+            int pid = 0;
+            GetWindowThreadProcessId(kiosk, out pid);
+            if (pid <= 0) { return; }
+            try
+            {
+                Process pr = Process.GetProcessById(pid);
+                if (pr == null || pr.HasExited) { return; }
+                if (!string.Equals(pr.ProcessName, "msedge", StringComparison.OrdinalIgnoreCase)) { return; }
+                edgeProc = pr;
+                Log("adopted kiosk edge pid=" + pid.ToString() +
+                    " (launcher exited after first-launch relaunch)  [t+" + Ms() + "ms]");
+            }
+            catch { }
         }
 
         private static bool EnumWindowsCallback(IntPtr hWnd, IntPtr lParam)
@@ -829,6 +866,27 @@ namespace UEGUnlockConfig
                 if (edgeProc != null && !edgeProc.HasExited)
                 {
                     edgeProc.Kill();
+                }
+                else if (pid <= 0)
+                {
+                    // edgeProc 已退出（首启 relaunch 且没来得及收养）：按标题兜底
+                    // 找窗口所属进程杀掉。窗口已被用户关掉时 FindKiosk 找不到，
+                    // 无事可做也无害。
+                    IntPtr kiosk = FindKiosk();
+                    if (kiosk != IntPtr.Zero)
+                    {
+                        int kpid = 0;
+                        GetWindowThreadProcessId(kiosk, out kpid);
+                        if (kpid > 0)
+                        {
+                            try
+                            {
+                                Process p2 = Process.GetProcessById(kpid);
+                                if (p2 != null && !p2.HasExited) { p2.Kill(); }
+                            }
+                            catch { }
+                        }
+                    }
                 }
             }
             catch { }
