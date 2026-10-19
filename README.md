@@ -41,31 +41,36 @@
 - Microsoft Edge（任意近版本）
 - .NET Framework 4.x（系统自带，仅编译时需要）
 
-## 快速开始
+## 快速开始（最终用户：下载一个 zip，解压即用）
 
-```powershell
-# 1. 配置（可跳过，全部有默认值）
-copy config.example.txt config.txt
+到 [Releases](https://github.com/belightest/ueg-unlock-anim/releases/latest) 下载
+`ueg-unlock-anim-<版本>-win64.zip`，解压到任意目录（别放 Program Files 等只读位置）：
 
-# 2. 编译（用系统自带 csc，零依赖；产出 UEGHost.exe 与 UEGUnlockConfig.exe）
-src\build.cmd
+1. 运行 `UEGUnlockConfig.exe` → 设名片/照片/主题 →「安装触发」（免管理员，写当前用户的 Run 键）
+2. **注销重新登录**即可看到（纯锁屏解锁不会触发，见下文说明）
 
-# 3. 装触发（免管理员，写当前用户的 Run 键）
-.\UEGUnlockConfig.exe        # 打开控制台 →「安装触发」
-# 或者手动：
-New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
-  -Name 'UEGUnlockAnim' -Value '"<本仓库路径>\UEGHost.exe"' -PropertyType String -Force
-
-# 4. 注销重新登录即可看到（纯锁屏解锁不会触发，见下文说明）
-```
-
-> **首次运行稍慢属正常**：新解压目录 / 新机器的 Edge 配置文件（`edge-profile`）是
-> 空的，Edge 第一次使用它会自我重启一次（换进程，约 1 秒内完成，不是崩溃）。
-> 宿主会自动识别并接管新进程，起播约在启动后 1–2 秒；第二次起就是老配置文件，
+> **首次运行稍慢属正常**：新解压目录的 Edge 配置文件（`edge-profile`）是空的，
+> Edge 第一次使用它会自我重启一次（换进程，约 1 秒内完成，不是崩溃）。
+> 宿主会自动识别并接管新进程，起播约在启动后 1–2 秒；之后即是老配置文件，
 > 没有这一步。
 
-**不需要每次都编译**：`UEGHost.exe` 只是起 Edge + 看窗口标题 + 渐隐收尾，
-下载 release 或第一次编译好后就能长期用。
+不想用控制台也可以手动装触发（二选一，别并用，会播两遍）：
+
+```powershell
+New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+  -Name 'UEGUnlockAnim' -Value '"<zip 解压路径>\UEGHost.exe"' -PropertyType String -Force
+```
+
+## 自己编译（开发者）
+
+```powershell
+src\build.cmd
+```
+
+用系统自带 csc.exe 零依赖编译，产出两个 exe；同时在 `dist\` 打出与 release 相同的
+完整可分发包 `ueg-unlock-anim-<版本>-win64.zip`（白名单打包，天然排除
+photo.jpg / config.txt / run.log / edge-profile 等个人文件，源码与文档随 zip 分发）。
+版本号在 build.cmd 的 `set VER=` 一行，发新版时改那里。
 
 ## 目录结构
 
@@ -75,7 +80,7 @@ New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
 ├── src/
 │   ├── UEGHost.cs           原生宿主：起 Edge / 桌面判定 / 置顶 / 渐隐收尾
 │   ├── UEGUnlockConfig.cs   一体化控制台（WinForms 全自绘，黑白灰单色系）
-│   └── build.cmd            用系统 csc.exe 编译上面两个（ASCII + CRLF）
+│   └── build.cmd            用系统 csc.exe 编译上面两个，并打出 dist\ 完整可分发包
 └── ueg/
     ├── unlock.html          外层：iframe 容器 + 开播闸门 + 收尾水波纹
     ├── ueg.html             动画本体（三幕 + 终幕粒子 + 配音）
