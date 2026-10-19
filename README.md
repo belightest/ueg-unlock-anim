@@ -59,13 +59,18 @@ New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
 # 4. 注销重新登录即可看到（纯锁屏解锁不会触发，见下文说明）
 ```
 
+> **首次运行稍慢属正常**：新解压目录 / 新机器的 Edge 配置文件（`edge-profile`）是
+> 空的，Edge 第一次使用它会自我重启一次（换进程，约 1 秒内完成，不是崩溃）。
+> 宿主会自动识别并接管新进程，起播约在启动后 1–2 秒；第二次起就是老配置文件，
+> 没有这一步。
+
 **不需要每次都编译**：`UEGHost.exe` 只是起 Edge + 看窗口标题 + 渐隐收尾，
 下载 release 或第一次编译好后就能长期用。
 
 ## 目录结构
 
 ```
-├── host.ps1                 PowerShell 兜底宿主（没有 UEGHost.exe 时控制台自动退回）
+├── host.ps1                 PowerShell 兜底宿主（与 UEGHost.exe 行为同构，含开播闸门）
 ├── config.example.txt       配置模板（复制为 config.txt）
 ├── src/
 │   ├── UEGHost.cs           原生宿主：起 Edge / 桌面判定 / 置顶 / 渐隐收尾
@@ -84,7 +89,7 @@ New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
 |---|---|---|
 | `theme` | `ueg` / `550c` / `custom` | 主题；`custom` 配合 `accent` |
 | `accent` | `#rrggbb` | 自定义主色 |
-| `voice` | `male` / `female` | 配音音色 |
+| `voice` | `male` / `female`（默认 `female`） | 配音音色 |
 | `audio` | `on` / `off` | 音频总开关 |
 | `autoplay` | `on` / `off` | 关 = 每幕等待点击/回车 |
 | `enabled` | `on` / `off` | 总开关，`off` 静默跳过（不用卸载触发） |

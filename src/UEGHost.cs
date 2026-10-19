@@ -110,6 +110,26 @@ namespace UEGUnlockConfig
         [DllImport("user32.dll")]
         private static extern int GetSystemMetrics(int nIndex);
 
+        [DllImport("user32.dll")]
+        private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfn, IntPtr dwData);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+        private delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, IntPtr lprcMonitor, IntPtr dwData);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MONITORINFO
+        {
+            public int cbSize;
+            public RECT rcMonitor;
+            public RECT rcWork;
+            public int dwFlags;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT { public int X; public int Y; }
 
@@ -145,6 +165,8 @@ namespace UEGUnlockConfig
 
         private static readonly List<IntPtr> EdgeWindows = new List<IntPtr>();
         private static readonly EnumWindowsProc EnumCb = new EnumWindowsProc(EnumWindowsCallback);
+        private static readonly List<RECT> MonitorRects = new List<RECT>();
+        private static readonly MonitorEnumProc MonCb = new MonitorEnumProc(MonitorEnumCallback);
 
         private static string baseDir = "";
         private static string logFile = "";
@@ -170,6 +192,18 @@ namespace UEGUnlockConfig
             logFile = Path.Combine(baseDir, "run.log");
             profileDir = Path.Combine(baseDir, "edge-profile");
             goFile = Path.Combine(baseDir, "ueg", "go.txt");
+
+            // 日志轮转：超过 1MB 就按时间戳归档重来，防止长期登录累积把磁盘悄悄撑满。
+            // 归档文件一律不删（删除类操作不擅自做），靠时间戳区分互不覆盖。
+            try
+            {
+                FileInfo lf = new FileInfo(logFile);
+                if (lf.Exists && lf.Length > 1048576)
+                {
+                    File.Move(logFile, logFile + "." + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".old");
+                }
+            }
+            catch { }
 
             string page = Path.Combine(baseDir, "ueg", "unlock.html");
             string edge = @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
@@ -204,7 +238,7 @@ namespace UEGUnlockConfig
             AddParam(q, "photo", Get("photo", ""));
             AddParam(q, "theme", Get("theme", "ueg"));
             AddParam(q, "accent", Get("accent", ""));
-            AddParam(q, "voice", Get("voice", "male"));
+            AddParam(q, "voice", Get("voice", "female"));
             if (Get("audio", "on") == "off") { q.Add("audio=0"); }
             if (Get("autoplay", "on") == "off") { q.Add("auto=0"); }
             // 开播闸门的开关：页面只认带 ueg=1 的入口才等信号，
@@ -691,29 +725,76 @@ namespace UEGUnlockConfig
 
         // ---------------- 屏上判定（放行闸门的真正判据） ----------------
         // "我们的 Edge 窗口真的出现在用户眼前了吗？"
-        // 做法：取屏幕中心点，用 WindowFromPoint 打一枪 —— 该 API 只命中**当前
+        // 做法：在每个显示器的中心各打一枪 WindowFromPoint —— 该 API 只命中**当前
         // 输入桌面**（屏幕真正显示的那个桌面）上的窗口：欢迎界面/锁屏还挂着时，
         // 打中的是那边的窗口，沿父链爬到顶不是我们；等输入桌面切到 Default，
         // 我们的全屏置顶窗口才第一次被打中。判据取"命中的窗口爬到根是不是我们
         // 这次起的 Edge 进程"（Edge 的渲染子窗口同属这个进程，一起算）。
+        // 多屏都要查：kiosk 全屏可能落在副屏（手动测试时焦点在副屏），只打主屏
+        // 中心会永远打不中、白等 90 秒兜底。
         // 任何一步取不到信息都算"不在屏上"（fail-closed）：宁可晚播，不能早播。
         private static bool EdgeOnScreen()
         {
             if (edgeProc == null || edgeProc.HasExited) { return false; }
             try
             {
-                IntPtr hit = ProbeCenter();
-                if (hit == IntPtr.Zero) { return false; }
-                IntPtr root = GetAncestor(hit, GA_ROOT);
-                if (root == IntPtr.Zero) { root = hit; }
-                int pid = 0;
-                GetWindowThreadProcessId(root, out pid);
-                return pid == edgeProc.Id;
+                List<POINT> pts = ScreenCenters();
+                for (int i = 0; i < pts.Count; i++)
+                {
+                    IntPtr hit = WindowFromPoint(pts[i]);
+                    if (hit == IntPtr.Zero) { continue; }
+                    IntPtr root = GetAncestor(hit, GA_ROOT);
+                    if (root == IntPtr.Zero) { root = hit; }
+                    int pid = 0;
+                    GetWindowThreadProcessId(root, out pid);
+                    if (pid > 0 && pid == edgeProc.Id) { return true; }
+                }
+                return false;
             }
             catch { return false; }
         }
 
-        // 屏幕中心点当前打中的窗口（命中不了返回 Zero）
+        // 所有显示器的中心点。枚举失败时退回主屏中心（老行为）。
+        private static List<POINT> ScreenCenters()
+        {
+            List<POINT> pts = new List<POINT>();
+            MonitorRects.Clear();
+            try { EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, MonCb, IntPtr.Zero); }
+            catch { }
+            if (MonitorRects.Count == 0)
+            {
+                POINT only;
+                only.X = GetSystemMetrics(SM_CXSCREEN) / 2;
+                only.Y = GetSystemMetrics(SM_CYSCREEN) / 2;
+                pts.Add(only);
+                return pts;
+            }
+            for (int i = 0; i < MonitorRects.Count; i++)
+            {
+                POINT pt;
+                pt.X = MonitorRects[i].Left + (MonitorRects[i].Right - MonitorRects[i].Left) / 2;
+                pt.Y = MonitorRects[i].Top + (MonitorRects[i].Bottom - MonitorRects[i].Top) / 2;
+                pts.Add(pt);
+            }
+            return pts;
+        }
+
+        private static bool MonitorEnumCallback(IntPtr hMonitor, IntPtr hdc, IntPtr lprcMonitor, IntPtr dwData)
+        {
+            try
+            {
+                MONITORINFO mi = new MONITORINFO();
+                mi.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(MONITORINFO));
+                if (GetMonitorInfo(hMonitor, ref mi))
+                {
+                    MonitorRects.Add(mi.rcMonitor);
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        // 屏幕中心点当前打中的窗口（命中不了返回 Zero）—— 诊断日志用，保持单屏语义
         private static IntPtr ProbeCenter()
         {
             POINT pt;
