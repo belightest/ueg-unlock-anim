@@ -14,7 +14,19 @@ $base    = $PSScriptRoot
 if ($base -eq '' -or $null -eq $base) { $base = 'D:\BootAnim' }
 $cfgPath = Join-Path $base 'config.txt'
 $page    = Join-Path $base 'ueg\unlock.html'
-$edge    = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+# Edge 路径：App Paths 注册表（只读）优先 —— 装在别的盘/非默认位置也能发现；
+# 读不到再回落两个默认安装位置
+$edge = $null
+foreach ($hive in @('HKLM:', 'HKCU:')) {
+  try {
+    $v = (Get-ItemProperty -Path ($hive + '\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe') -ErrorAction Stop).'(default)'
+    if ($v -and (Test-Path -LiteralPath $v)) { $edge = $v; break }
+  } catch {}
+}
+if (-not $edge) {
+  $edge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+  if (-not (Test-Path -LiteralPath $edge)) { $edge = 'C:\Program Files\Microsoft\Edge\Application\msedge.exe' }
+}
 $profile = Join-Path $base 'edge-profile'
 
 $logFile = Join-Path $base 'run.log'
@@ -158,10 +170,26 @@ function Edge-On-Screen {
   } catch { return $false }
 }
 
-# ---------- 1. 读取 config.txt（显式 UTF-8：中文系统上默认按 GBK 读会乱码）----------
+# ---------- 1. 读取 config.txt（编码自适应：记事本另存为 ANSI 的 GBK 文件不能按 UTF-8 硬读）----------
 $cfg = @{}
-if (Test-Path $cfgPath) {
-  foreach ($line in (Get-Content -LiteralPath $cfgPath -Encoding UTF8)) {
+if (Test-Path -LiteralPath $cfgPath) {
+  # 控制台写的是 UTF-8 with BOM；但用户用记事本手动"另存为"会写成 ANSI(GBK)，
+  # 按 UTF-8 硬读整片乱码（名片显示锟斤拷）。先严格 UTF-8 试解，字节不合法
+  # 时按 GBK(936) 再解（PS 7 的 .NET Core 默认无 936 代码页，解不了就退回
+  # 宽松 UTF-8，至少不崩）。
+  $cfgLines = @()
+  try {
+    $bytes = [System.IO.File]::ReadAllBytes($cfgPath)
+    $text = $null
+    try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes) } catch {
+      try { $text = [System.Text.Encoding]::GetEncoding(936).GetString($bytes) } catch { $text = $null }
+    }
+    if ($null -ne $text) {
+      $text = $text.TrimStart([char]0xFEFF)
+      $cfgLines = $text -split "\r?\n"
+    }
+  } catch {}
+  foreach ($line in $cfgLines) {
     $t = $line.Trim()
     if ($t -eq '' -or $t.StartsWith('#') -or $t.StartsWith('[')) { continue }
     $i = $t.IndexOf('=')
@@ -233,9 +261,16 @@ Write-Log ("edge pid=" + $proc.Id)
 # FirstLaunchAfterInstallation 后自我重启换 pid，2026-10-20 实测 33ms 内退出，
 # 不是崩溃）；② 同 profile 已有实例时的 singleton 交接。
 function Get-SameProfileProcesses {
+  # PS 5.1 自带 Get-CimInstance；PS 7 默认不带（要装 WindowsCompatibility 模块），
+  # 失败时退回 Get-WmiObject（两代都有，PS 7 里只是弃用警告）
+  $procs = $null
+  try { $procs = Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction Stop } catch { $procs = $null }
+  if ($null -eq $procs) {
+    try { $procs = Get-WmiObject Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue } catch { $procs = $null }
+  }
+  if ($null -eq $procs) { return @() }
   try {
-    return @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
-      Where-Object { $_.CommandLine -like ('*' + $profile + '*') })
+    return @($procs | Where-Object { $_.CommandLine -like ('*' + $profile + '*') })
   } catch { return @() }
 }
 

@@ -206,13 +206,9 @@ namespace UEGUnlockConfig
             catch { }
 
             string page = Path.Combine(baseDir, "ueg", "unlock.html");
-            string edge = @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
-            if (!File.Exists(edge) && File.Exists(@"C:\Program Files\Microsoft\Edge\Application\msedge.exe"))
-            {
-                edge = @"C:\Program Files\Microsoft\Edge\Application\msedge.exe";
-            }
             if (!File.Exists(page)) { Log("skipped: unlock.html missing"); return 0; }
-            if (!File.Exists(edge)) { Log("skipped: msedge missing"); return 0; }
+            string edge = FindEdge();
+            if (edge == "") { Log("skipped: msedge missing"); return 0; }
 
             g_cfg = LoadConfig(Path.Combine(baseDir, "config.txt"));
             if (Get("enabled", "on") == "off")
@@ -492,15 +488,63 @@ namespace UEGUnlockConfig
         // ---------------- 配置 ----------------
         private static Dictionary<string, string> g_cfg = new Dictionary<string, string>();
 
+        // 找 msedge.exe：先查 App Paths 注册表（只读，不走修改）—— 用户把 Edge
+        // 装到别的盘、非默认位置，或被管家类软件改过安装路径时都能发现；
+        // 注册表不可用（沙箱/权限异常）时回落两个默认安装位置。
+        private static string FindEdge()
+        {
+            string[] hives = new string[]
+            {
+                "HKEY_LOCAL_MACHINE\\",
+                "HKEY_CURRENT_USER\\"
+            };
+            string sub = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\msedge.exe";
+            for (int i = 0; i < hives.Length; i++)
+            {
+                try
+                {
+                    object v = Microsoft.Win32.Registry.GetValue(hives[i] + sub, "", null);
+                    if (v is string)
+                    {
+                        string p = (string)v;
+                        if (p != "" && File.Exists(p)) { return p; }
+                    }
+                }
+                catch { }
+            }
+            string p86 = @"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe";
+            if (File.Exists(p86)) { return p86; }
+            string p64 = @"C:\Program Files\Microsoft\Edge\Application\msedge.exe";
+            if (File.Exists(p64)) { return p64; }
+            return "";
+        }
+
         private static Dictionary<string, string> LoadConfig(string path)
         {
             Dictionary<string, string> d = new Dictionary<string, string>();
             try
             {
                 if (!File.Exists(path)) { return d; }
-                foreach (string raw in File.ReadAllLines(path, Encoding.UTF8))
+                // 编码自适应：记事本"另存为"默认写 ANSI(GBK) —— 含中文的配置被按
+                // UTF-8 硬读会整片乱码（名片显示锟斤拷）。先严格 UTF-8 试解，
+                // 字节不合法时按 GBK(936) 再解；两者都不可用才放弃。
+                byte[] raw = File.ReadAllBytes(path);
+                string text;
+                try
                 {
-                    string t = raw.Trim();
+                    text = new UTF8Encoding(false, true).GetString(raw);
+                }
+                catch
+                {
+                    try { text = Encoding.GetEncoding(936).GetString(raw); }
+                    catch { text = null; }
+                }
+                if (text == null) { return d; }
+                text = text.TrimStart('\uFEFF');   // BOM 不参与键名
+                text = text.Replace("\r\n", "\n").Replace("\r", "\n");
+                foreach (string raw2 in text.Split('\n'))
+                {
+                    string t = raw2.Trim();
                     if (t == "" || t.StartsWith("#") || t.StartsWith("[")) { continue; }
                     int i = t.IndexOf('=');
                     if (i < 1) { continue; }

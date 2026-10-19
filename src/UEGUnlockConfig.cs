@@ -15,6 +15,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -1055,7 +1056,7 @@ namespace UEGUnlockConfig
         }
 
         // 动画页面在 ueg\ 里，CSS url() 的相对路径按"文档基准"解析 → 实际指 ueg\ 下
-        // 控制台预览必须用同一基准，否则会指到不存在的 <安装目录>\assets\photo.jpg
+        // 控制台预览必须用同一基准，否则会指到不存在的 D:\BootAnim\assets\photo.jpg
         // 注意：配置里的存储值 assets/photo.jpg 是对的，不要改成 ueg/assets/photo.jpg
         private string ResolvePhotoPath(string rel)
         {
@@ -1300,6 +1301,11 @@ namespace UEGUnlockConfig
         [STAThread]
         static void Main(string[] args)
         {
+            // 高 DPI 屏（125%/150%/200% 缩放）上先把本进程标记为 DPI aware，
+            // 否则 WinForms 按 96DPI 光栅化再被系统拉伸，整个窗口发虚、
+            // 自绘的照片预览/色卡也跟着糊。失败（老系统无此导出）不影响运行。
+            try { SetProcessDPIAware(); }
+            catch { }
             if (args != null && args.Length >= 2 && args[0] == "--selftest")
             {
                 SelfTest.Run(args[1]);
@@ -1309,6 +1315,9 @@ namespace UEGUnlockConfig
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());
         }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
     }
 
     static class SelfTest
