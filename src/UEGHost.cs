@@ -98,6 +98,11 @@ namespace UEGUnlockConfig
         private static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex,
             StringBuilder pvInfo, int nLength, out int lpnLengthNeeded);
 
+        [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        private const uint WM_CLOSE = 0x0010;
+
         [DllImport("user32.dll")]
         private static extern IntPtr WindowFromPoint(POINT Point);
 
@@ -425,14 +430,14 @@ namespace UEGUnlockConfig
                     int ownerPid = 0;
                     GetWindowThreadProcessId(h, out ownerPid);
                     FadeOut(h, FadeSteps, FadeStepMs);
-                    StopKiosk(ownerPid);
+                    StopKiosk(ownerPid, h);
                     Log("closed by window fade  [t+" + Ms() + "ms]");
                     return 0;
                 }
 
                 if (title.IndexOf("UEG-DONE-CLICKED", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    StopKiosk(0);
+                    StopKiosk(0, h);
                     Log("closed by lightup end");
                     return 0;
                 }
@@ -445,7 +450,7 @@ namespace UEGUnlockConfig
 
                 if (doneAt != null && (DateTime.Now - doneAt.Value).TotalSeconds >= fallback)
                 {
-                    StopKiosk(0);
+                    StopKiosk(0, h);
                     Log("closed by fallback");
                     return 0;
                 }
@@ -454,14 +459,14 @@ namespace UEGUnlockConfig
                 if (relAt != null && doneAt == null &&
                     (DateTime.Now - relAt.Value).TotalSeconds >= BootTimeoutSec)
                 {
-                    StopKiosk(0);
+                    StopKiosk(0, h);
                     Log("closed by boot timeout (no UEG-DONE in " + BootTimeoutSec.ToString() + "s)");
                     return 0;
                 }
 
                 if (DateTime.Now > hardStop)
                 {
-                    StopKiosk(0);
+                    StopKiosk(0, h);
                     Log("closed by 3min hard stop");
                     return 0;
                 }
@@ -984,33 +989,43 @@ namespace UEGUnlockConfig
             catch { }
         }
 
-        // ---------------- 关窗：只杀本次动画窗口所属的 Edge 进程 ----------------
-        private static void StopKiosk(int pid)
+        // ---------------- 关窗：优雅关闭 + 连进程树一起杀 ----------------
+        // 2026-10-20 修复：原实现用 Process.Kill() 单杀主进程，Edge 的渲染/GPU
+        // 子进程及其内容窗口在主进程死后残留（动画刚播完、JS 收尾正忙时残留可达
+        // 数秒甚至更久），全屏 kiosk 无任务栏，用户只能按 Win 键手动善后。
+        // 现改为：先给窗口发 WM_CLOSE 走优雅关闭路径，再 taskkill /T 连进程树
+        // 一起杀（Windows 自带工具，零下载零安装、不加程序集引用），最后按
+        // 进程 id 直接 Kill 兜底。用户自己的 Edge 绝不受影响（见兜底分支的
+        // IsOurEdge 校验，fail-closed）。
+        private static void StopKiosk(int pid, IntPtr hWnd)
         {
-            if (pid > 0)
+            // 1. 优雅路径：给 kiosk 窗口发 WM_CLOSE。kiosk 窗口对用户手势免疫，
+            //    但程序发送的关闭消息有效；万一无效，下面的强杀照常收尸。
+            if (hWnd != IntPtr.Zero)
+            {
+                try { SendMessage(hWnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero); }
+                catch { }
+                System.Threading.Thread.Sleep(300);
+            }
+            // 2. 强杀进程树：主进程 + 渲染/GPU 子进程。
+            KillTree(pid);
+            // 3. 收养 relaunch 后 edgeProc 是真浏览器进程，通常与窗口进程同一个；
+            //    万一不同（窗口中途换过手），两个都杀干净。
+            try
+            {
+                if (edgeProc != null && !edgeProc.HasExited && edgeProc.Id != pid)
+                {
+                    KillTree(edgeProc.Id);
+                }
+            }
+            catch { }
+            // 4. 兜底：连 pid 都没拿到（edgeProc 已退出的 relaunch 场景）时按标题
+            //    找窗口所属进程杀。只动本次运行期间起来的 Edge —— 用户自己的
+            //    Edge 哪怕开着我们的页面也不能杀。
+            if (pid <= 0)
             {
                 try
                 {
-                    Process p = Process.GetProcessById(pid);
-                    if (p != null && !p.HasExited)
-                    {
-                        p.Kill();
-                    }
-                }
-                catch { }
-            }
-            try
-            {
-                if (edgeProc != null && !edgeProc.HasExited)
-                {
-                    edgeProc.Kill();
-                }
-                else if (pid <= 0)
-                {
-                    // edgeProc 已退出（首启 relaunch 且没来得及收养）：按标题兜底
-                    // 找窗口所属进程杀掉。窗口已被用户关掉时 FindKiosk 找不到，
-                    // 无事可做也无害。同样只动本次运行期间起来的 Edge —— 用户
-                    // 自己的 Edge 哪怕开着我们的页面也不能杀。
                     IntPtr kiosk = FindKiosk();
                     if (kiosk != IntPtr.Zero)
                     {
@@ -1018,15 +1033,36 @@ namespace UEGUnlockConfig
                         GetWindowThreadProcessId(kiosk, out kpid);
                         if (kpid > 0)
                         {
-                            try
-                            {
-                                Process p2 = Process.GetProcessById(kpid);
-                                if (p2 != null && !p2.HasExited && IsOurEdge(p2)) { p2.Kill(); }
-                            }
-                            catch { }
+                            Process p2 = Process.GetProcessById(kpid);
+                            if (p2 != null && !p2.HasExited && IsOurEdge(p2)) { p2.Kill(); }
                         }
                     }
                 }
+                catch { }
+            }
+        }
+
+        // 连进程树杀一个 Edge 实例：taskkill /PID x /T /F 先走（带走渲染/GPU
+        // 子进程），同步等它收工；再按进程 id 直接 Kill 兜底（taskkill 缺失的
+        // 极端环境）。宿主 return 之前进程树必须已经收干净。
+        private static void KillTree(int pid)
+        {
+            if (pid <= 0) return;
+            try
+            {
+                System.Diagnostics.Process tk = System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo("taskkill", "/PID " + pid.ToString() + " /T /F")
+                    {
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                if (tk != null) { try { tk.WaitForExit(3000); } catch { } }
+            }
+            catch { }
+            try
+            {
+                System.Diagnostics.Process p = System.Diagnostics.Process.GetProcessById(pid);
+                if (p != null && !p.HasExited) { p.Kill(); }
             }
             catch { }
         }
