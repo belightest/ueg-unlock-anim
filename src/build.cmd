@@ -57,7 +57,7 @@ REM  files (photo.jpg / config.txt / run.log / go.txt / edge-profile)
 REM  out of the package by construction. Bump VER for each release.
 REM ============================================================
 echo Packaging full bundle ...
-set VER=1.0.3
+set VER=1.0.4
 set STAGE=%~dp0..\dist\stage
 set PKG=%~dp0..\dist\ueg-unlock-anim-%VER%-win64.zip
 REM clear the staging dir left by the previous run (build scratch only)
